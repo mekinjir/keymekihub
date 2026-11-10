@@ -3796,7 +3796,8 @@ local featureBuildOk, featureBuildError = pcall(function()
 			playStart, playPausedTotal = tick() - (playbackFrames[startIndex].t / autoWalkSpeed), 0
 			playing, playPaused, playStopped = true, false, false
 			autoWalkResume = false
-			setPlaybackAnim(playbackFrames[startIndex].state or "walk")
+			local autoWalkMotionState = "walk"
+			setPlaybackAnim("walk")
 			playConnection = RunService.Heartbeat:Connect(function()
 				if not playing or playPaused or isCleaningUp then return end
 				local _, hrp = currentCharacter()
@@ -3821,26 +3822,28 @@ local featureBuildOk, featureBuildError = pcall(function()
 				local idx = 1
 				while idx < #playbackFrames and playbackFrames[idx + 1].t < elapsed do idx = idx + 1 end
 				local a, b = playbackFrames[idx], playbackFrames[math.min(idx + 1, #playbackFrames)]
-                local desiredState = a.state or "walk"
                 local segmentDt = math.max(0.001, b.t - a.t)
                 local delta = b.cf.Position - a.cf.Position
                 local segmentSpeed = delta.Magnitude / segmentDt
-                -- Deteksi fase udara dari perubahan ketinggian rute. Ambang dibuat lebih sensitif
-                -- agar frame awal loncatan tidak telanjur memainkan animasi lari/jalan.
                 local verticalSpeed = delta.Y / segmentDt
-                if desiredState ~= "jump" and desiredState ~= "fall" then
-                    if verticalSpeed > 1.25 and delta.Y > 0.35 then
-                        desiredState = "jump"
-                    elseif verticalSpeed < -1.5 and delta.Y < -0.35 then
-                        desiredState = "fall"
-                    elseif desiredState == "idle" then
-                        desiredState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
+                -- Klasifikasi ulang setiap segmen supaya state FALL/JUMP tidak terbawa setelah mendarat.
+                local sourceState = string.lower(tostring(a.state or ""))
+                local nextState = string.lower(tostring(b.state or ""))
+                local taggedAir = sourceState == "jump" or sourceState == "fall" or nextState == "jump" or nextState == "fall"
+                local rising = verticalSpeed > 1.0 and delta.Y > 0.12
+                local descending = verticalSpeed < -1.25 and delta.Y < -0.12
+                if rising then
+                    autoWalkMotionState = "jump"
+                elseif descending then
+                    autoWalkMotionState = "fall"
+                elseif autoWalkMotionState == "jump" or autoWalkMotionState == "fall" then
+                    if math.abs(verticalSpeed) <= 1.25 or (not taggedAir and delta.Y >= -0.12) then
+                        autoWalkMotionState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
                     end
-                elseif desiredState == "jump" and verticalSpeed < -1.5 then
-                    desiredState = "fall"
+                else
+                    autoWalkMotionState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
                 end
-                -- Prioritas Action untuk jump/fall menghentikan track run/walk sebelum diputar.
-                setPlaybackAnim(desiredState)
+                setPlaybackAnim(autoWalkMotionState)
 				local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
 				hrp.CFrame = a.cf:Lerp(b.cf, alpha)
 			end)

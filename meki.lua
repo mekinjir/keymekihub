@@ -3423,25 +3423,34 @@ local featureBuildOk, featureBuildError = pcall(function()
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		return char, hrp, hum
 	end
-	local function stopWalkAnim()
-		if walkTrack then pcall(function() walkTrack:Stop(0.12) end); walkTrack = nil end
-	end
-	local function playWalkAnim()
-		local _, _, hum = currentCharacter()
-		if not hum or walkTrack then return end
-		pcall(function()
-			local char = player.Character
-			local animate = char and char:FindFirstChild("Animate")
-			local walkFolder = animate and (animate:FindFirstChild("walk") or animate:FindFirstChild("run"))
-			local animObj = walkFolder and walkFolder:FindFirstChildOfClass("Animation")
-			local anim = Instance.new("Animation")
-			anim.AnimationId = (animObj and animObj.AnimationId ~= "" and animObj.AnimationId) or "rbxassetid://507767714"
-			walkTrack = hum:LoadAnimation(anim)
-			walkTrack.Looped = true
-			walkTrack.Priority = Enum.AnimationPriority.Movement
-			walkTrack:Play(0.12)
-		end)
-	end
+	local activeAnimState = "idle"
+    local walkTracks = {}
+    local function stopWalkAnim()
+        for _, tr in pairs(walkTracks) do pcall(function() tr:Stop(0.12); tr:Destroy() end) end
+        table.clear(walkTracks)
+        activeAnimState = "idle"
+    end
+    local function getAnimTrack(kind)
+        local _, _, hum = currentCharacter()
+        if not hum then return nil end
+        local char = player.Character
+        local animate = char and char:FindFirstChild("Animate")
+        local folder = animate and animate:FindFirstChild(kind == "run" and "run" or "walk")
+        local animObj = folder and folder:FindFirstChildOfClass("Animation")
+        local id = animObj and animObj.AnimationId or (kind == "run" and "rbxassetid://507767714" or "rbxassetid://507777826")
+        local anim = Instance.new("Animation"); anim.AnimationId = id
+        local tr = hum:LoadAnimation(anim); tr.Looped = true; tr.Priority = Enum.AnimationPriority.Movement
+        return tr
+    end
+    local function setPlaybackAnim(state)
+        state = state or "idle"
+        if state == activeAnimState then return end
+        stopWalkAnim()
+        if state == "walk" or state == "run" then
+            local tr = getAnimTrack(state)
+            if tr then tr:Play(0.12); walkTracks[state] = tr; activeAnimState = state end
+        end
+    end
 	local function sanitizeName(name)
 		name = tostring(name or ""):gsub("[^%w_%- ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
 		return name:sub(1, 48)
@@ -3517,7 +3526,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 		local name = nextRecordingName()
 		local payload = { mapId = CURRENT_MAP_ID, frames = {} }
 		for i, frame in ipairs(recordFrames) do
-			payload.frames[i] = { t = frame.t, cf = { frame.cf:GetComponents() } }
+			payload.frames[i] = { t = frame.t, cf = { frame.cf:GetComponents() }, state = frame.state or "idle", speed = frame.speed or 0 }
 		end
 		local ok, err = pcall(function()
 			writefile(RECORD_FOLDER .. "/" .. name .. ".json", HttpService:JSONEncode(payload))
@@ -3560,7 +3569,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 		for _, frame in ipairs(data.frames) do
 			if type(frame) == "table" and type(frame.cf or frame.cframe) == "table" and #(frame.cf or frame.cframe) >= 12 and tonumber(frame.t or frame.time) then
 				local okCF, cf = pcall(function() return CFrame.new(unpack(frame.cf or frame.cframe)) end)
-				if okCF then table.insert(frames, { t = tonumber(frame.t or frame.time), cf = cf }) end
+				if okCF then table.insert(frames, { t = tonumber(frame.t or frame.time), cf = cf, state = frame.state or "idle", speed = tonumber(frame.speed) or 0 }) end
 			end
 		end
 		if #frames < 2 then return false, "Frame rekaman tidak cukup" end
@@ -3576,7 +3585,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 		local startIndex = continueFromNearest and nearestFrameIndex(playbackFrames) or 1
 		playStart, playPausedTotal = tick() - (playbackFrames[startIndex].t / recordPlaybackSpeed), 0
 		playing, playPaused, playStopped = true, false, false
-		playWalkAnim()
+		setPlaybackAnim(playbackFrames[startIndex].state)
 		playConnection = RunService.Heartbeat:Connect(function()
 			if not playing or playPaused or isCleaningUp then return end
 			local _, hrp = currentCharacter()
@@ -3592,6 +3601,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			local idx = 1
 			while idx < #playbackFrames and playbackFrames[idx + 1].t < elapsed do idx = idx + 1 end
 			local a = playbackFrames[idx]
+            setPlaybackAnim(a.state)
 			local b = playbackFrames[math.min(idx + 1, #playbackFrames)]
 			local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
 			hrp.CFrame = a.cf:Lerp(b.cf, alpha)
@@ -3609,7 +3619,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 		else
 			playPausedTotal = playPausedTotal + (tick() - playPauseAt)
 			playPaused = false
-			playWalkAnim()
+			setPlaybackAnim(playbackFrames[nearestFrameIndex(playbackFrames)].state)
 			recorderStatus("Status: PLAYBACK")
 		end
 		return true
@@ -3619,12 +3629,28 @@ local featureBuildOk, featureBuildError = pcall(function()
 	recordStatusLabel = REC:CreateLabel("Status: Siap")
 	REC:CreateSlider({ Name = "Kecepatan Playback Rekaman", Flag = "recordPlaybackSpeed", Min = 0.25, Max = 3, Default = 1, Step = 0.25, Suffix = "x", Callback = function(v) recordPlaybackSpeed = v end })
 	REC:CreateLabel("Rekam jalur karakter, simpan, lalu kelola rekaman dari daftar map yang sesuai.")
-	local recordRenameBox = REC:CreateInput({ Placeholder = "Nama baru (khusus rename rekaman)" })
 	REC:CreateButton({ Name = "● MULAI REKAM", Accent = true, Callback = startRecording })
 	REC:CreateButton({ Name = "Ⅱ PAUSE / RESUME REKAM", Callback = toggleRecordPause })
 	REC:CreateButton({ Name = "■ STOP & SIMPAN OTOMATIS", Danger = true, Callback = function() saveRecording() end })
 	REC:CreateSection("HASIL REKAMAN • MAP INI")
 	local recordCards = {}
+    local function openRenamePopup(oldName)
+        local overlay = new("Frame", {Name="RenameOverlay", Size=UDim2.fromScale(1,1), BackgroundColor3=Color3.new(0,0,0), BackgroundTransparency=0.35, ZIndex=500}, gui)
+        local card = new("Frame", {Size=UDim2.fromOffset(310,160), AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.fromScale(0.5,0.5), BackgroundColor3=T.Panel, BorderSizePixel=0, ZIndex=501}, overlay); round(card,10); outline(card,T.Stroke,1,0.2)
+        new("TextLabel", {Text="RENAME REKAMAN", Font=FONTB, TextSize=15, TextColor3=T.Text, BackgroundTransparency=1, Position=UDim2.fromOffset(14,10), Size=UDim2.new(1,-28,0,25), TextXAlignment=Enum.TextXAlignment.Left, ZIndex=502}, card)
+        local box = new("TextBox", {Text=oldName, PlaceholderText="Nama baru", Font=FONT, TextSize=13, TextColor3=T.Text, PlaceholderColor3=T.SubText, BackgroundColor3=T.Track, BorderSizePixel=0, ClearTextOnFocus=false, Position=UDim2.fromOffset(14,45), Size=UDim2.new(1,-28,0,38), ZIndex=502}, card); round(box,7)
+        local cancel = new("TextButton", {Text="BATAL", Font=FONTB, TextSize=13, TextColor3=T.Text, BackgroundColor3=T.PanelLite, BorderSizePixel=0, Position=UDim2.fromOffset(14,100), Size=UDim2.new(0.46,-5,0,40), ZIndex=502}, card); round(cancel,7)
+        local save = new("TextButton", {Text="SIMPAN", Font=FONTB, TextSize=13, TextColor3=Color3.new(1,1,1), BackgroundColor3=T.AccentDark, BorderSizePixel=0, Position=UDim2.new(0.54,0,0,100), Size=UDim2.new(0.46,-14,0,40), ZIndex=502}, card); round(save,7)
+        cancel.MouseButton1Click:Connect(function() overlay:Destroy() end)
+        save.MouseButton1Click:Connect(function()
+            local newName = sanitizeName(box.Text)
+            if newName == "" then Window:Notify("Rename", "Nama tidak boleh kosong", 2, "error"); return end
+            local oldPath, newPath = RECORD_FOLDER .. "/" .. oldName .. ".json", RECORD_FOLDER .. "/" .. newName .. ".json"
+            if oldName ~= newName and isfile(newPath) then Window:Notify("Rename", "Nama tersebut sudah dipakai", 2, "error"); return end
+            local ok, err = pcall(function() if oldName ~= newName then writefile(newPath, readfile(oldPath)); delfile(oldPath) end end)
+            if ok then overlay:Destroy(); Window:Notify("Rename", "Berhasil rename", 2, "success"); refreshRecordNames() else Window:Notify("Rename", tostring(err), 3, "error") end
+        end)
+    end
 	refreshRecordNames = function()
 		for _, card in ipairs(recordCards) do pcall(function() card:Destroy() end) end
 		table.clear(recordCards)
@@ -3651,14 +3677,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			})
 			table.insert(recordCards, row)
 			local manageRow = REC:CreateActionRow({
-				{ Text = "✎ RENAME", Callback = function()
-					local newName = sanitizeName(recordRenameBox.Text)
-					if newName == "" then Window:Notify("Rename", "Isi nama baru di kolom rename", 2, "error"); return end
-					local oldPath, newPath = RECORD_FOLDER .. "/" .. name .. ".json", RECORD_FOLDER .. "/" .. newName .. ".json"
-					if isfile(newPath) then Window:Notify("Rename", "Nama tersebut sudah dipakai", 2, "error"); return end
-					local ok, err = pcall(function() writefile(newPath, readfile(oldPath)); delfile(oldPath) end)
-					if ok then recordRenameBox.Text = ""; Window:Notify("Rename", "Berhasil rename", 2, "success"); refreshRecordNames() else Window:Notify("Rename", tostring(err), 3, "error") end
-				end },
+				{ Text = "✎ RENAME", Callback = function() openRenamePopup(name) end },
 				{ Text = "🗑 HAPUS", Danger = true, Callback = function()
 					local path = RECORD_FOLDER .. "/" .. name .. ".json"
 					if type(delfile) ~= "function" then Window:Notify("Hapus", "Executor tidak mendukung delfile", 2, "error"); return end
@@ -3680,7 +3699,14 @@ local featureBuildOk, featureBuildError = pcall(function()
 		if now - lastSample < (1 / 30) then return end
 		lastSample = now
 		local elapsed = now - recordStart - recordPausedTotal
-		table.insert(recordFrames, { t = elapsed, cf = hrp.CFrame })
+		local _, _, hum = currentCharacter()
+        local moveMag = hum and hum.MoveDirection.Magnitude or 0
+        local moveSpeed = hum and hum.MoveDirection.Magnitude * hum.WalkSpeed or 0
+        local state = "idle"
+        if moveMag > 0.05 then
+            state = (hum and hum.WalkSpeed >= 20) and "run" or "walk"
+        end
+        table.insert(recordFrames, { t = elapsed, cf = hrp.CFrame, state = state, speed = moveSpeed })
 	end))
 
 	-- Fetch sekali dari GitHub; PlaceId yang ada di JSON menjadi sumber kunci map Cymora.
@@ -3745,7 +3771,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			for _, frame in ipairs(cymoraData.frames) do
 				if type(frame) == "table" and type(frame.cf or frame.cframe) == "table" and #(frame.cf or frame.cframe) >= 12 and tonumber(frame.t or frame.time) then
 					local okCF, cf = pcall(function() return CFrame.new(unpack(frame.cf or frame.cframe)) end)
-					if okCF then table.insert(frames, { t = tonumber(frame.t or frame.time), cf = cf }) end
+					if okCF then table.insert(frames, { t = tonumber(frame.t or frame.time), cf = cf, state = frame.state or "idle", speed = tonumber(frame.speed) or 0 }) end
 				end
 			end
 			if #frames < 2 then return false, "Data jalur Cymora kosong / format tidak cocok" end
@@ -3756,7 +3782,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			playStart, playPausedTotal = tick() - (playbackFrames[startIndex].t / autoWalkSpeed), 0
 			playing, playPaused, playStopped = true, false, false
 			autoWalkResume = false
-			playWalkAnim()
+			setPlaybackAnim(playbackFrames[startIndex].state or "walk")
 			playConnection = RunService.Heartbeat:Connect(function()
 				if not playing or playPaused or isCleaningUp then return end
 				local _, hrp = currentCharacter()
@@ -3781,6 +3807,12 @@ local featureBuildOk, featureBuildError = pcall(function()
 				local idx = 1
 				while idx < #playbackFrames and playbackFrames[idx + 1].t < elapsed do idx = idx + 1 end
 				local a, b = playbackFrames[idx], playbackFrames[math.min(idx + 1, #playbackFrames)]
+                local desiredState = a.state or "walk"
+                if desiredState == "idle" then
+                    local segmentSpeed = (b.cf.Position - a.cf.Position).Magnitude / math.max(0.001, b.t - a.t)
+                    desiredState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
+                end
+                setPlaybackAnim(desiredState)
 				local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
 				hrp.CFrame = a.cf:Lerp(b.cf, alpha)
 			end)

@@ -3437,7 +3437,7 @@ local featureBuildOk, featureBuildError = pcall(function()
         local animate = char and char:FindFirstChild("Animate")
         local folderName = ({run="run", walk="walk", jump="jump", fall="fall"})[kind] or "walk"
         local folder = animate and animate:FindFirstChild(folderName)
-        local animObj = folder and folder:FindFirstChildOfClass("Animation")
+        local animObj = folder and folder:FindFirstChildWhichIsA("Animation", true)
         local fallback = ({run="rbxassetid://507767714", walk="rbxassetid://507777826", jump="rbxassetid://507765000", fall="rbxassetid://507767968"})[kind]
         local id = animObj and animObj.AnimationId or fallback
         if not id then return nil end
@@ -3825,16 +3825,21 @@ local featureBuildOk, featureBuildError = pcall(function()
                 local segmentDt = math.max(0.001, b.t - a.t)
                 local delta = b.cf.Position - a.cf.Position
                 local segmentSpeed = delta.Magnitude / segmentDt
-                -- Jalur Auto Walk yang tidak menyimpan state tetap dapat mengenali fase loncat dari lintasan vertikal.
-                if desiredState == "idle" or desiredState == "walk" or desiredState == "run" then
-                    if delta.Y > 2.5 and (delta.Y / segmentDt) > 3 then
+                -- Deteksi fase udara dari perubahan ketinggian rute. Ambang dibuat lebih sensitif
+                -- agar frame awal loncatan tidak telanjur memainkan animasi lari/jalan.
+                local verticalSpeed = delta.Y / segmentDt
+                if desiredState ~= "jump" and desiredState ~= "fall" then
+                    if verticalSpeed > 1.25 and delta.Y > 0.35 then
                         desiredState = "jump"
-                    elseif delta.Y < -2.5 and (delta.Y / segmentDt) < -3 then
+                    elseif verticalSpeed < -1.5 and delta.Y < -0.35 then
                         desiredState = "fall"
                     elseif desiredState == "idle" then
                         desiredState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
                     end
+                elseif desiredState == "jump" and verticalSpeed < -1.5 then
+                    desiredState = "fall"
                 end
+                -- Prioritas Action untuk jump/fall menghentikan track run/walk sebelum diputar.
                 setPlaybackAnim(desiredState)
 				local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
 				hrp.CFrame = a.cf:Lerp(b.cf, alpha)

@@ -3435,21 +3435,42 @@ local featureBuildOk, featureBuildError = pcall(function()
         if not hum then return nil end
         local char = player.Character
         local animate = char and char:FindFirstChild("Animate")
-        local folder = animate and animate:FindFirstChild(kind == "run" and "run" or "walk")
+        local folderName = ({run="run", walk="walk", jump="jump", fall="fall"})[kind] or "walk"
+        local folder = animate and animate:FindFirstChild(folderName)
         local animObj = folder and folder:FindFirstChildOfClass("Animation")
-        local id = animObj and animObj.AnimationId or (kind == "run" and "rbxassetid://507767714" or "rbxassetid://507777826")
+        local fallback = ({run="rbxassetid://507767714", walk="rbxassetid://507777826", jump="rbxassetid://507765000", fall="rbxassetid://507767968"})[kind]
+        local id = animObj and animObj.AnimationId or fallback
+        if not id then return nil end
         local anim = Instance.new("Animation"); anim.AnimationId = id
-        local tr = hum:LoadAnimation(anim); tr.Looped = true; tr.Priority = Enum.AnimationPriority.Movement
+        local tr = hum:LoadAnimation(anim)
+        tr.Looped = (kind == "walk" or kind == "run" or kind == "fall")
+        tr.Priority = (kind == "jump" or kind == "fall") and Enum.AnimationPriority.Action or Enum.AnimationPriority.Movement
         return tr
     end
     local function setPlaybackAnim(state)
         state = state or "idle"
         if state == activeAnimState then return end
+        -- Stop semua track sebelumnya sebelum memainkan state baru agar jump tidak bertumpuk dengan walk/run.
         stopWalkAnim()
-        if state == "walk" or state == "run" then
+        if state == "walk" or state == "run" or state == "jump" or state == "fall" then
             local tr = getAnimTrack(state)
-            if tr then tr:Play(0.12); walkTracks[state] = tr; activeAnimState = state end
+            if tr then
+                tr:Play(state == "jump" and 0.04 or 0.10)
+                walkTracks[state] = tr
+                activeAnimState = state
+            end
         end
+    end
+    local function getRecordedMotionState(hum, hrp)
+        if not hum or not hrp then return "idle" end
+        local hs = hum:GetState()
+        if hs == Enum.HumanoidStateType.Jumping then return "jump" end
+        if hs == Enum.HumanoidStateType.Freefall then return "fall" end
+        if hs == Enum.HumanoidStateType.Climbing then return "climb" end
+        if hs == Enum.HumanoidStateType.Swimming then return "swim" end
+        local moving = hum.MoveDirection.Magnitude
+        if moving <= 0.05 then return "idle" end
+        return hum.WalkSpeed >= 20 and "run" or "walk"
     end
 	local function sanitizeName(name)
 		name = tostring(name or ""):gsub("[^%w_%- ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -3628,7 +3649,6 @@ local featureBuildOk, featureBuildError = pcall(function()
 	REC:CreateSection("WALK RECORDER")
 	recordStatusLabel = REC:CreateLabel("Status: Siap")
 	REC:CreateSlider({ Name = "Kecepatan Playback Rekaman", Flag = "recordPlaybackSpeed", Min = 0.25, Max = 3, Default = 1, Step = 0.25, Suffix = "x", Callback = function(v) recordPlaybackSpeed = v end })
-	REC:CreateLabel("Rekam jalur karakter, simpan, lalu kelola rekaman dari daftar map yang sesuai.")
 	REC:CreateButton({ Name = "● MULAI REKAM", Accent = true, Callback = startRecording })
 	REC:CreateButton({ Name = "Ⅱ PAUSE / RESUME REKAM", Callback = toggleRecordPause })
 	REC:CreateButton({ Name = "■ STOP & SIMPAN OTOMATIS", Danger = true, Callback = function() saveRecording() end })
@@ -3700,12 +3720,8 @@ local featureBuildOk, featureBuildError = pcall(function()
 		lastSample = now
 		local elapsed = now - recordStart - recordPausedTotal
 		local _, _, hum = currentCharacter()
-        local moveMag = hum and hum.MoveDirection.Magnitude or 0
         local moveSpeed = hum and hum.MoveDirection.Magnitude * hum.WalkSpeed or 0
-        local state = "idle"
-        if moveMag > 0.05 then
-            state = (hum and hum.WalkSpeed >= 20) and "run" or "walk"
-        end
+        local state = getRecordedMotionState(hum, hrp)
         table.insert(recordFrames, { t = elapsed, cf = hrp.CFrame, state = state, speed = moveSpeed })
 	end))
 
@@ -3740,7 +3756,6 @@ local featureBuildOk, featureBuildError = pcall(function()
 		and tonumber(game.PlaceId) == cymoraMapId
 
 	AW:CreateSection("MOUNT CYMORA")
-	AW:CreateLabel(cymoraUnlocked and "Map terdeteksi: MOUNT CYMORA" or "🔒 Auto Walk hanya bisa digunakan di MOUNT CYMORA")
 	local cymoraMapDropdown = AW:CreateDropdown({
 		Options = { "MOUNT CYMORA" },
 		Default = cymoraUnlocked and "MOUNT CYMORA" or nil,
@@ -3755,9 +3770,8 @@ local featureBuildOk, featureBuildError = pcall(function()
 	local autoWalkToggle
 	local autoWalkResume = false
 	AW:CreateSlider({ Name = "Kecepatan Auto Walk", Flag = "autoWalkSpeed", Min = 0.25, Max = 3, Default = 1, Step = 0.25, Suffix = "x", Callback = function(v) autoWalkSpeed = v end })
-	AW:CreateToggle({ Name = "Loop Auto Walk Terus-Menerus", Flag = "autoWalkLoop", Callback = function(v) autoWalkLoop = v end })
+	AW:CreateToggle({ Name = "Auto Loop", Flag = "autoWalkLoop", Callback = function(v) autoWalkLoop = v end })
 	local autoWalkActionButton
-	local autoWalkStatusLabel = AW:CreateLabel(cymoraUnlocked and "Rute Mount Cymora siap digunakan." or "Rute terkunci atau gagal dimuat.")
 	autoWalkToggle = AW:CreateToggle({
 		Name = cymoraUnlocked and "Auto Walk Mount Cymora" or "🔒 Auto Walk (Terkunci)",
 		Flag = "autoWalkCymora",
@@ -3808,9 +3822,18 @@ local featureBuildOk, featureBuildError = pcall(function()
 				while idx < #playbackFrames and playbackFrames[idx + 1].t < elapsed do idx = idx + 1 end
 				local a, b = playbackFrames[idx], playbackFrames[math.min(idx + 1, #playbackFrames)]
                 local desiredState = a.state or "walk"
-                if desiredState == "idle" then
-                    local segmentSpeed = (b.cf.Position - a.cf.Position).Magnitude / math.max(0.001, b.t - a.t)
-                    desiredState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
+                local segmentDt = math.max(0.001, b.t - a.t)
+                local delta = b.cf.Position - a.cf.Position
+                local segmentSpeed = delta.Magnitude / segmentDt
+                -- Jalur Auto Walk yang tidak menyimpan state tetap dapat mengenali fase loncat dari lintasan vertikal.
+                if desiredState == "idle" or desiredState == "walk" or desiredState == "run" then
+                    if delta.Y > 2.5 and (delta.Y / segmentDt) > 3 then
+                        desiredState = "jump"
+                    elseif delta.Y < -2.5 and (delta.Y / segmentDt) < -3 then
+                        desiredState = "fall"
+                    elseif desiredState == "idle" then
+                        desiredState = segmentSpeed < 0.5 and "idle" or (segmentSpeed >= 16 and "run" or "walk")
+                    end
                 end
                 setPlaybackAnim(desiredState)
 				local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1

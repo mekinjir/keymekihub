@@ -3423,6 +3423,19 @@ local featureBuildOk, featureBuildError = pcall(function()
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		return char, hrp, hum
 	end
+	-- Root clearance: jarak pusat HumanoidRootPart dari kaki/permukaan tanah.
+	-- Dipakai agar rekaman tetap menempel ke tanah walau skala avatar berbeda.
+	local function getRootClearance()
+		local _, hrp, hum = currentCharacter()
+		if not hrp or not hum then return nil end
+		return hum.HipHeight + (hrp.Size.Y * 0.5)
+	end
+	local function applyRootClearance(cf, sourceClearance)
+		local currentClearance = getRootClearance()
+		if not cf or not currentClearance or not tonumber(sourceClearance) then return cf end
+		local offsetY = currentClearance - tonumber(sourceClearance)
+		return cf + Vector3.new(0, offsetY, 0)
+	end
 	local activeAnimState = "idle"
     local walkTracks = {}
     local function stopWalkAnim()
@@ -3545,7 +3558,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			return
 		end
 		local name = nextRecordingName()
-		local payload = { mapId = CURRENT_MAP_ID, frames = {} }
+		local payload = { mapId = CURRENT_MAP_ID, rootClearance = getRootClearance(), frames = {} }
 		for i, frame in ipairs(recordFrames) do
 			payload.frames[i] = { t = frame.t, cf = { frame.cf:GetComponents() }, state = frame.state or "idle", speed = frame.speed or 0 }
 		end
@@ -3595,14 +3608,15 @@ local featureBuildOk, featureBuildError = pcall(function()
 		end
 		if #frames < 2 then return false, "Frame rekaman tidak cukup" end
 		table.sort(frames, function(a, b) return a.t < b.t end)
-		return true, frames
+		return true, frames, tonumber(data.rootClearance)
 	end
 	local function startPlayback(name, continueFromNearest)
 		if recording then return false, "Simpan atau hentikan rekaman dulu" end
-		local ok, result = loadPlayback(name)
+		local ok, result, sourceClearance = loadPlayback(name)
 		if not ok then return false, result end
 		stopPlayback()
 		playbackFrames = result
+		local playbackHeightOffset = sourceClearance and ((getRootClearance() or sourceClearance) - sourceClearance) or 0
 		local startIndex = continueFromNearest and nearestFrameIndex(playbackFrames) or 1
 		playStart, playPausedTotal = tick() - (playbackFrames[startIndex].t / recordPlaybackSpeed), 0
 		playing, playPaused, playStopped = true, false, false
@@ -3614,7 +3628,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 			local elapsed = (tick() - playStart - playPausedTotal) * recordPlaybackSpeed
 			local last = playbackFrames[#playbackFrames]
 			if elapsed >= last.t then
-				hrp.CFrame = last.cf
+				hrp.CFrame = last.cf + Vector3.new(0, playbackHeightOffset, 0)
 				stopPlayback()
 				recorderStatus("Status: Playback selesai")
 				return
@@ -3625,7 +3639,7 @@ local featureBuildOk, featureBuildError = pcall(function()
             setPlaybackAnim(a.state)
 			local b = playbackFrames[math.min(idx + 1, #playbackFrames)]
 			local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
-			hrp.CFrame = a.cf:Lerp(b.cf, alpha)
+			hrp.CFrame = a.cf:Lerp(b.cf, alpha) + Vector3.new(0, playbackHeightOffset, 0)
 		end)
 		recorderStatus(continueFromNearest and "Status: LANJUT DARI POSISI TERDEKAT" or ("Status: PLAYBACK - " .. sanitizeName(name)))
 		return true
@@ -3749,7 +3763,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 		end
 		local frames = data.frames or data.recording or data.recordedFrames or data.path or data.points
 		if type(frames) ~= "table" then return data, tonumber(mapId), "Data frames tidak ditemukan" end
-		return { mapId = tonumber(mapId), frames = frames }, tonumber(mapId), nil
+		return { mapId = tonumber(mapId), rootClearance = tonumber(data.rootClearance), frames = frames }, tonumber(mapId), nil
 	end
 	cymoraData, cymoraMapId, cymoraFetchError = fetchCymoraData()
 	local cymoraUnlocked = cymoraData ~= nil and cymoraFetchError == nil and cymoraMapId ~= nil
@@ -3792,6 +3806,8 @@ local featureBuildOk, featureBuildError = pcall(function()
 			table.sort(frames, function(a, b) return a.t < b.t end)
 			stopPlayback()
 			playbackFrames = frames
+			local sourceClearance = tonumber(cymoraData.rootClearance) or 3 -- fallback rig R15 standar untuk jalur lama
+			local playbackHeightOffset = (getRootClearance() or sourceClearance) - sourceClearance
 			local startIndex = autoWalkResume and nearestFrameIndex(playbackFrames) or 1
 			playStart, playPausedTotal = tick() - (playbackFrames[startIndex].t / autoWalkSpeed), 0
 			playing, playPaused, playStopped = true, false, false
@@ -3805,13 +3821,13 @@ local featureBuildOk, featureBuildError = pcall(function()
 				local elapsed = (tick() - playStart - playPausedTotal) * autoWalkSpeed
 				local last = playbackFrames[#playbackFrames]
 				if elapsed >= last.t then
-					hrp.CFrame = last.cf
+					hrp.CFrame = last.cf + Vector3.new(0, playbackHeightOffset, 0)
 					if autoWalkLoop then
-						hrp.CFrame = last.cf
+						hrp.CFrame = last.cf + Vector3.new(0, playbackHeightOffset, 0)
 						playStart, playPausedTotal = tick() - (playbackFrames[1].t / autoWalkSpeed), 0
 						return
 					end
-					hrp.CFrame = last.cf
+					hrp.CFrame = last.cf + Vector3.new(0, playbackHeightOffset, 0)
 					stopPlayback()
 					if autoWalkToggle then autoWalkToggle:Set(false, true) end
 					autoWalkResume = false
@@ -3845,7 +3861,7 @@ local featureBuildOk, featureBuildError = pcall(function()
                 end
                 setPlaybackAnim(autoWalkMotionState)
 				local alpha = (b.t > a.t) and math.clamp((elapsed - a.t) / (b.t - a.t), 0, 1) or 1
-				hrp.CFrame = a.cf:Lerp(b.cf, alpha)
+				hrp.CFrame = a.cf:Lerp(b.cf, alpha) + Vector3.new(0, playbackHeightOffset, 0)
 			end)
 			return true
 		end,

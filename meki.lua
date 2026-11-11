@@ -1317,9 +1317,9 @@ local function extractKeyFromHTML(html)
     if type(html) ~= "string" then return nil end
 
     for tag in html:gmatch("<input%f[%s/>][^>]*>") do
-        local id = tag:match("id%s*=%s*"([^"]+)"") or tag:match("id%s*=%s*'([^']+)'")
+        local id = tag:match('id%s*=%s*"([^"]+)"') or tag:match("id%s*=%s*'([^']+)'")
         if id == "keyInput" then
-            local value = tag:match("value%s*=%s*"([^"]*)"") or tag:match("value%s*=%s*'([^']*)'")
+            local value = tag:match('value%s*=%s*"([^"]*)"') or tag:match("value%s*=%s*'([^']*)'")
             if type(value) == "string" then
                 value = value:gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&#39;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">")
                 value = value:gsub("^%s+", ""):gsub("%s+$", "")

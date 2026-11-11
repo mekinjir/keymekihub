@@ -1307,11 +1307,30 @@ function Lib:CreateWindow(cfg)
 	return Window
 end
 
-local KEY_RAW_URL = "https://raw.githubusercontent.com/mekinjir/keymekihub/refs/heads/main/key-meki-hub.text"
+local KEY_RAW_URL = "https://raw.githubusercontent.com/mekinjir/Getkey/refs/heads/main/index.html"
 local LINKVERTISE_URL = "https://discord.gg/j8FeNBVkP"
 local KEY_FILE = "meki_hub_key.dat"
 
--- Ambil key terbaru dari GitHub Raw. Tidak ada key tetap yang ditanam di script.
+-- Ambil HTML dari GitHub, lalu ekstrak value input dengan id="keyInput".
+-- Jadi perubahan value di index.html langsung menjadi key baru tanpa update Lua.
+local function extractKeyFromHTML(html)
+    if type(html) ~= "string" then return nil end
+
+    for tag in html:gmatch("<input%f[%s/>][^>]*>") do
+        local id = tag:match("id%s*=%s*"([^"]+)"") or tag:match("id%s*=%s*'([^']+)'")
+        if id == "keyInput" then
+            local value = tag:match("value%s*=%s*"([^"]*)"") or tag:match("value%s*=%s*'([^']*)'")
+            if type(value) == "string" then
+                value = value:gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&#39;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">")
+                value = value:gsub("^%s+", ""):gsub("%s+$", "")
+                if value ~= "" then return value end
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
 local function fetchRemoteKey()
     local ok, body = pcall(function()
         if type(game.HttpGet) == "function" then
@@ -1327,9 +1346,7 @@ local function fetchRemoteKey()
         error("HTTP request tidak tersedia")
     end)
     if not ok or type(body) ~= "string" then return nil end
-    body = body:gsub("^%s+", ""):gsub("%s+$", "")
-    if body == "" then return nil end
-    return body
+    return extractKeyFromHTML(body)
 end
 
 local function keySaved()
@@ -3402,6 +3419,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 	ensureRecordFolder()
 
 	local recordStatusLabel, recordListLabel
+	local miniStatus
 	local refreshRecordNames
 	local recordFrames = {}
 	local recording, recordPaused = false, false
@@ -3416,6 +3434,7 @@ local featureBuildOk, featureBuildError = pcall(function()
 
 	local function recorderStatus(text)
 		if recordStatusLabel then recordStatusLabel.Text = text end
+		if miniStatus then miniStatus.Text = string.upper(tostring(text):gsub("^Status:%s*", "")):sub(1, 26) end
 	end
 	local function currentCharacter()
 		local char = player.Character
@@ -3693,37 +3712,62 @@ local featureBuildOk, featureBuildError = pcall(function()
 			table.insert(recordCards, REC:CreateLabel("Belum ada rekaman untuk map ini."))
 			return names
 		end
-		for _, name in ipairs(names) do
-			local title = REC:CreateLabel("▰  " .. name)
-			table.insert(recordCards, title)
-			local row = REC:CreateActionRow({
-				{ Text = "▶ PLAY", Callback = function()
-					local ok, err = startPlayback(name, false)
-					if not ok then Window:Notify("Playback", err, 3, "error") end
-				end },
-				{ Text = "■ STOP", Danger = true, Callback = function()
-					if playing then stopPlayback(); recorderStatus("Status: Playback dihentikan — siap dilanjutkan") end
-				end },
-				{ Text = "↻ LANJUT", Callback = function()
-					local ok, err = startPlayback(name, true)
-					if not ok then Window:Notify("Playback", err, 3, "error") end
-				end },
-			})
+		-- Satu rekaman = satu baris ringkas, mirip daftar Waypoints.
+		for i, name in ipairs(names) do
+			local row = new("Frame", { Name = "RecordRow", Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = T.Panel, BorderSizePixel = 0, LayoutOrder = REC:NextOrder() }, REC.Page)
+			round(row, 8); outline(row, T.Stroke, 1, 0.5)
+			new("TextLabel", { Text = name, Font = FONT, TextSize = 12, TextColor3 = T.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -206, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, row)
+			local function miniButton(label, x, width, color, callback)
+				local b = new("TextButton", { Text = label, Font = FONTB, TextSize = 10, TextColor3 = T.Text, BackgroundColor3 = color or T.PanelLite, BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.fromOffset(width, 26), Position = UDim2.new(1, x, 0.5, -13) }, row)
+				round(b, 6); b.MouseButton1Click:Connect(callback); return b
+			end
+			miniButton("PLAY", -190, 42, T.AccentDark, function() local ok, err = startPlayback(name, false); if not ok then Window:Notify("Playback", err, 3, "error") end end)
+			miniButton("LANJUT", -144, 48, T.PanelLite, function() local ok, err = startPlayback(name, true); if not ok then Window:Notify("Playback", err, 3, "error") end end)
+			miniButton("EDIT", -92, 38, T.PanelLite, function() openRenamePopup(name) end)
+			miniButton("HAPUS", -50, 42, T.Danger or Color3.fromRGB(190, 55, 65), function()
+				local path = RECORD_FOLDER .. "/" .. name .. ".json"
+				if type(delfile) ~= "function" then Window:Notify("Hapus", "Executor tidak mendukung delfile", 2, "error"); return end
+				local ok = pcall(delfile, path)
+				Window:Notify("Hapus", ok and "Rekaman dihapus" or "Gagal menghapus", 2, ok and "success" or "error")
+				refreshRecordNames()
+			end)
 			table.insert(recordCards, row)
-			local manageRow = REC:CreateActionRow({
-				{ Text = "✎ RENAME", Callback = function() openRenamePopup(name) end },
-				{ Text = "🗑 HAPUS", Danger = true, Callback = function()
-					local path = RECORD_FOLDER .. "/" .. name .. ".json"
-					if type(delfile) ~= "function" then Window:Notify("Hapus", "Executor tidak mendukung delfile", 2, "error"); return end
-					local ok = pcall(delfile, path)
-					Window:Notify("Hapus", ok and "Rekaman dihapus" or "Gagal menghapus", 2, ok and "success" or "error")
-					refreshRecordNames()
-				end },
-			})
-			table.insert(recordCards, manageRow)
 		end
 	end
 	refreshRecordNames()
+
+	-- Kontrol recorder mini di luar jendela utama.
+	local miniRecorder = new("Frame", { Name = "MekiMiniRecorder", Size = UDim2.fromOffset(206, 112), Position = UDim2.new(1, -220, 0.55, 0), BackgroundColor3 = T.Panel, BorderSizePixel = 0, Visible = false, ZIndex = 800 }, gui)
+	round(miniRecorder, 10); outline(miniRecorder, T.Accent, 1, 0.15)
+	local miniTop = new("TextButton", { Text = "MEKI RECORDER   •   DRAG", Font = FONTB, TextSize = 10, TextColor3 = T.Text, BackgroundColor3 = T.PanelLite, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 27), ZIndex = 801 }, miniRecorder)
+	round(miniTop, 8)
+	miniStatus = new("TextLabel", { Text = "SIAP MEREKAM", Font = FONTB, TextSize = 10, TextColor3 = T.SubText, BackgroundTransparency = 1, Position = UDim2.fromOffset(9, 31), Size = UDim2.new(1, -18, 0, 17), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 801 }, miniRecorder)
+	local function miniAction(text, x, width, color, callback)
+		local b = new("TextButton", { Text = text, Font = FONTB, TextSize = 10, TextColor3 = Color3.new(1,1,1), BackgroundColor3 = color, BorderSizePixel = 0, Position = UDim2.fromOffset(x, 57), Size = UDim2.fromOffset(width, 34), ZIndex = 801 }, miniRecorder)
+		round(b, 7); b.MouseButton1Click:Connect(callback); return b
+	end
+	miniAction("REC", 8, 56, T.AccentDark, startRecording)
+	miniAction("PAUSE", 75, 56, T.PanelLite, toggleRecordPause)
+	miniAction("STOP", 142, 56, Color3.fromRGB(205, 59, 66), saveRecording)
+	local draggingMini, dragStart, startPos
+	miniTop.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			draggingMini = true; dragStart = input.Position; startPos = miniRecorder.Position
+		end
+	end)
+	miniTop.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then draggingMini = false end
+	end)
+	addCleanup(UserInputService.InputChanged:Connect(function(input)
+		if draggingMini and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			miniRecorder.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end))
+	REC:CreateToggle({ Name = "Kontrol Record di Luar UI", Flag = "recordFloatingControls", Callback = function(enabled)
+		miniRecorder.Visible = enabled
+		return true
+	end })
 
 	addCleanup(RunService.Heartbeat:Connect(function()
 		if not recording or recordPaused or isCleaningUp then return end
